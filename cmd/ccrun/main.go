@@ -27,7 +27,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: ccrun run [--hostname NAME] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] -- <command> [args...]")
 	os.Exit(2)
 }
 
@@ -41,7 +41,6 @@ func runCmd(args []string) {
 	}
 
 	if *hostname == "" {
-		// Step-1 behavior (no namespaces)
 		code, err := run.ExecPassthrough(rest[0], rest[1:], os.Environ())
 		if err != nil && code == 0 {
 			code = 1
