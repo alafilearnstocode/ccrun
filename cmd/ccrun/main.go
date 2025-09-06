@@ -27,20 +27,21 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] [ -rootfs PATH ] -- <command> [args...]")
 	os.Exit(2)
 }
 
 func runCmd(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	hostname := fs.String("hostname", "", "UTS hostname inside container")
+	root := fs.String("rootfs", "", "Path to container rootfs for chroot")
 	fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) == 0 {
 		log.Fatal("no command provided")
 	}
 
-	if *hostname == "" {
+	if *hostname == "" && *root == "" {
 		code, err := run.ExecPassthrough(rest[0], rest[1:], os.Environ())
 		if err != nil && code == 0 {
 			code = 1
@@ -48,7 +49,11 @@ func runCmd(args []string) {
 		os.Exit(code)
 	}
 
-	cfg := ns.Config{Hostname: *hostname, UseUTS: true}
+	cfg := ns.Config{
+		Hostname: *hostname,
+		UseUTS:   *hostname != "",
+		Rootfs:   *root,
+	}
 	code, err := ns.SpawnChild(cfg, rest[0], rest[1:])
 	if err != nil && code == 0 {
 		code = 1
