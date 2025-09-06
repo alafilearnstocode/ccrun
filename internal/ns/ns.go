@@ -68,21 +68,14 @@ func ChildMain() {
 	f.Parse(os.Args[2:])
 	rest := f.Args()
 
-	// Find the `--` that separates flags from the target program.
-	sep := -1
-	for i, a := range rest {
-		if a == "--" {
-			sep = i
-			break
-		}
-	}
-	if sep == -1 || sep == len(rest)-1 {
-		fmt.Fprintln(os.Stderr, "child: missing -- <cmd>")
+	// After f.Parse, the standard flag package has already consumed and removed
+	// the `"--"` separator. The remaining args are: <cmd> <args...>.
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "child: missing <cmd>")
 		os.Exit(2)
 	}
-
-	target := rest[sep+1]
-	targs := rest[sep+2:]
+	target := rest[0]
+	targs := rest[1:]
 
 	// Set the hostname if requested
 	if useUTS && hostname != "" {
