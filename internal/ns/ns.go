@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"syscall"
 
+	"github.com/alafilearnstocode/ccrun/internal/rootfs"
 	"github.com/alafilearnstocode/ccrun/internal/run"
 	"golang.org/x/sys/unix"
 )
@@ -16,11 +17,10 @@ const childSub = "__ccrun_child__"
 type Config struct {
 	Hostname string
 	UseUTS   bool
+	Rootfs   string
 }
 
-// SpawnChild re-execs the current binary with namespace flags.
-// We pass our child flags (-uts/-hostname) BEFORE the "--",
-// and the target program AFTER the "--".
+// re-exec self with clone flags; pass child flags before "--", target after
 func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -31,14 +31,16 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	if cfg.UseUTS {
 		argv = append(argv, "-uts", "-hostname", cfg.Hostname)
 	}
-	argv = append(argv, "--") // separator between child flags and target command
+	if cfg.Rootfs != "" {
+		argv = append(argv, "-rootfs", cfg.Rootfs)
+	}
+	argv = append(argv, "--")
 	argv = append(argv, command)
 	argv = append(argv, args...)
 
 	cmd := exec.Command(self, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
-	// SysProcAttr defines clone/namespace behavior
 	sp := &syscall.SysProcAttr{}
 	if cfg.UseUTS {
 		sp.Cloneflags |= unix.CLONE_NEWUTS
@@ -54,22 +56,19 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	return 0, nil
 }
 
-// ChildMain runs inside the namespaced child. It parses child flags (-uts/-hostname),
-// then looks for the "--" separator and executes the target program.
+// runs inside child; parse flags, set hostname, optionally chroot, then exec target
 func ChildMain() {
 	f := flag.NewFlagSet(childSub, flag.ExitOnError)
 	var useUTS bool
 	var hostname string
+	var root string
 	f.BoolVar(&useUTS, "uts", false, "use UTS namespace")
 	f.StringVar(&hostname, "hostname", "", "hostname inside container")
+	f.StringVar(&root, "rootfs", "", "path to root filesystem to chroot into")
 
-	// Parse child flags from args after the program name and subcommand.
-	// For argv: [ccrun __ccrun_child__ <flags> -- <cmd> <args>...]
 	f.Parse(os.Args[2:])
-	rest := f.Args()
+	rest := f.Args() // after Parse, "--" is removed; rest == <cmd> <args...>
 
-	// After f.Parse, the standard flag package has already consumed and removed
-	// the `"--"` separator. The remaining args are: <cmd> <args...>.
 	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "child: missing <cmd>")
 		os.Exit(2)
@@ -77,15 +76,19 @@ func ChildMain() {
 	target := rest[0]
 	targs := rest[1:]
 
-	// Set the hostname if requested
 	if useUTS && hostname != "" {
 		if err := unix.Sethostname([]byte(hostname)); err != nil {
 			fmt.Fprintln(os.Stderr, "sethostname:", err)
 			os.Exit(1)
 		}
 	}
+	if root != "" {
+		if err := rootfs.EnterChroot(root); err != nil {
+			fmt.Fprintln(os.Stderr, "chroot:", err)
+			os.Exit(1)
+		}
+	}
 
-	// Exec the target with inherited stdio and env
 	code, err := run.ExecPassthrough(target, targs, os.Environ())
 	if err != nil && code == 0 {
 		code = 1
