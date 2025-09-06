@@ -1,33 +1,58 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
 
+	"github.com/alafilearnstocode/ccrun/internal/ns"
 	"github.com/alafilearnstocode/ccrun/internal/run"
 )
 
+func main() {
+	log.SetFlags(0)
+	if len(os.Args) < 2 {
+		usage()
+	}
+
+	switch os.Args[1] {
+	case "run":
+		runCmd(os.Args[2:])
+	case "__ccrun_child__":
+		ns.ChildMain()
+	default:
+		usage()
+	}
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: ccrun run <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Usage: ccrun run [--hostname NAME] -- <command> [args...]")
 	os.Exit(2)
 }
 
-func main() {
-	log.SetFlags(0)
-	if len(os.Args) < 2 || os.Args[1] != "run" {
-		usage()
-	}
-	args := os.Args[2:]
-	if len(args) == 0 {
+func runCmd(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	hostname := fs.String("hostname", "", "UTS hostname inside container")
+	fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) == 0 {
 		log.Fatal("no command provided")
 	}
-	exit, err := run.ExecPassthrough(args[0], args[1:], os.Environ())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ccrun:", err)
-		if exit == 0 {
-			exit = 1
+
+	if *hostname == "" {
+		// Step-1 behavior (no namespaces)
+		code, err := run.ExecPassthrough(rest[0], rest[1:], os.Environ())
+		if err != nil && code == 0 {
+			code = 1
 		}
+		os.Exit(code)
 	}
-	os.Exit(exit)
+
+	cfg := ns.Config{Hostname: *hostname, UseUTS: true}
+	code, err := ns.SpawnChild(cfg, rest[0], rest[1:])
+	if err != nil && code == 0 {
+		code = 1
+	}
+	os.Exit(code)
 }
