@@ -1,0 +1,6 @@
+bin/
+.vscode/
+*.tmp
+rootfs/
+images/
+.DS_Store
