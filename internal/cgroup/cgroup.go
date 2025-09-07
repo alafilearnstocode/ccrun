@@ -11,17 +11,15 @@ import (
 
 const cgroupRoot = "/sys/fs/cgroup"
 
-// isCgroupV2 returns true if cgroup2 is mounted.
+// cgroup2 magic = 0x63677270
 func isCgroupV2() bool {
 	var st unix.Statfs_t
 	if err := unix.Statfs(cgroupRoot, &st); err != nil {
 		return false
 	}
-	// cgroup2 magic = 0x63677270
 	return st.Type == 0x63677270
 }
 
-// EnsureMount mounts cgroup2 at /sys/fs/cgroup if not already mounted.
 func EnsureMount() error {
 	if isCgroupV2() {
 		return nil
@@ -32,7 +30,6 @@ func EnsureMount() error {
 	return nil
 }
 
-// SetupAndEnter creates a per-container cgroup, applies limits, and moves the current process into it.
 func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 	if err := EnsureMount(); err != nil {
 		return "", err
@@ -55,8 +52,8 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 		}
 	}
 
-	// cpu.max: "<max> <period>", pick period=100000 (100ms). "max" means no limit.
-	const period = 100000
+	// cpu.max
+	const period = 100000 // 100ms
 	var cpuVal string
 	if cpuPct <= 0 || cpuPct >= 100 {
 		cpuVal = "max"
@@ -71,7 +68,7 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 		return "", fmt.Errorf("set cpu.max: %w", err)
 	}
 
-	// Add current process to the cgroup (v2 uses cgroup.procs).
+	// join cgroup
 	self := strconv.Itoa(os.Getpid())
 	if err := os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(self), 0o644); err != nil {
 		return "", fmt.Errorf("join cgroup: %w", err)
@@ -80,7 +77,6 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 	return path, nil
 }
 
-// Cleanup tries to remove the cgroup directory after exit; ignore errors if busy.
 func Cleanup(path string) {
 	_ = os.Remove(path)
 }
