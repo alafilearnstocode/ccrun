@@ -27,7 +27,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] [ -rootfs PATH ] [ -pidns ] [ -mntns ] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] [ -rootfs PATH ] [ -pidns ] [ -mntns ] [ -userns ] -- <command> [args...]")
 	os.Exit(2)
 }
 
@@ -37,13 +37,14 @@ func runCmd(args []string) {
 	root := fs.String("rootfs", "", "Path to container rootfs for chroot")
 	pidns := fs.Bool("pidns", false, "Use a new PID namespace")
 	mntns := fs.Bool("mntns", false, "Use a new mount namespace (private mounts)")
+	userns := fs.Bool("userns", false, "Use a new user namespace (rootless)")
 	fs.Parse(args)
 	rest := fs.Args()
 	if len(rest) == 0 {
 		log.Fatal("no command provided")
 	}
 
-	if *hostname == "" && *root == "" && !*pidns && !*mntns {
+	if *hostname == "" && *root == "" && !*pidns && !*mntns && !*userns {
 		code, err := run.ExecPassthrough(rest[0], rest[1:], os.Environ())
 		if err != nil && code == 0 {
 			code = 1
@@ -57,6 +58,7 @@ func runCmd(args []string) {
 		Rootfs:   *root,
 		UsePID:   *pidns,
 		UseMNT:   *mntns,
+		UseUSER:  *userns,
 	}
 	code, err := ns.SpawnChild(cfg, rest[0], rest[1:])
 	if err != nil && code == 0 {

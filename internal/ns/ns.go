@@ -20,6 +20,7 @@ type Config struct {
 	Rootfs   string
 	UsePID   bool // PID namespace
 	UseMNT   bool // Mount namespace
+	UseUSER  bool // User namespace (rootless)
 }
 
 // SpawnChild re-execs this binary with requested namespaces and arguments.
@@ -43,6 +44,9 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	if cfg.UseMNT {
 		argv = append(argv, "-mntns")
 	}
+	if cfg.UseUSER {
+		argv = append(argv, "-userns")
+	}
 	argv = append(argv, "--")
 	argv = append(argv, command)
 	argv = append(argv, args...)
@@ -59,6 +63,20 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	}
 	if cfg.UseMNT {
 		sp.Cloneflags |= unix.CLONE_NEWNS
+	}
+	if cfg.UseUSER {
+		sp.Cloneflags |= unix.CLONE_NEWUSER
+
+		uid := os.Getuid()
+		gid := os.Getgid()
+		sp.UidMappings = []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: uid, Size: 1},
+		}
+		// setgroups must be disabled before writing gid_map in userns
+		sp.GidMappingsEnableSetgroups = false
+		sp.GidMappings = []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: gid, Size: 1},
+		}
 	}
 	cmd.SysProcAttr = sp
 
@@ -79,12 +97,14 @@ func ChildMain() {
 	var root string
 	var usePID bool
 	var useMNT bool
+	var useUSER bool
 
 	f.BoolVar(&useUTS, "uts", false, "use UTS namespace")
 	f.StringVar(&hostname, "hostname", "", "hostname inside container")
 	f.StringVar(&root, "rootfs", "", "path to root filesystem to chroot into")
 	f.BoolVar(&usePID, "pidns", false, "use PID namespace (isolate process IDs)")
 	f.BoolVar(&useMNT, "mntns", false, "use mount namespace (private mounts)")
+	f.BoolVar(&useUSER, "userns", false, "use user namespace (rootless)")
 
 	f.Parse(os.Args[2:])
 	rest := f.Args() // after Parse, "--" is removed; remainder is <cmd> <args...>
