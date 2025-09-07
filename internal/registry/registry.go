@@ -40,6 +40,23 @@ func ParseImageRef(s string) (ImageRef, error) {
 	return ImageRef{Registry: "registry-1.docker.io", Repo: name, Tag: tag}, nil
 }
 
+func normalizeDigest(d string) string { return strings.TrimSpace(d) }
+
+func newRequest(method, url, token, accept string) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	req.Header.Set("User-Agent", "ccrun/0.1 (+https://github.com/alafilearnstocode/ccrun)")
+	return req, nil
+}
+
 // Docker schema2 manifest
 type Manifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
@@ -135,12 +152,14 @@ func getToken(ref ImageRef) (string, error) {
 
 func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error) {
 	// Allow both manifest list (index) and image manifest
-	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, nil)
-	req.Header.Set("Accept", strings.Join([]string{
+	acceptHeader := strings.Join([]string{
 		"application/vnd.docker.distribution.manifest.v2+json",
 		"application/vnd.docker.distribution.manifest.list.v2+json",
-	}, ", "))
-	req.Header.Set("Authorization", "Bearer "+token)
+	}, ", ")
+	req, err := newRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, token, acceptHeader)
+	if err != nil {
+		return nil, nil, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -181,9 +200,10 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		}
 
 		// Fetch selected image manifest
-		req2, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, nil)
-		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-		req2.Header.Set("Authorization", "Bearer "+token)
+		req2, err := newRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, token, "application/vnd.docker.distribution.manifest.v2+json")
+		if err != nil {
+			return nil, nil, err
+		}
 		resp2, err := http.DefaultClient.Do(req2)
 		if err != nil {
 			return nil, nil, err
@@ -216,8 +236,11 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 }
 
 func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
-	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/blobs/"+digest, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + normalizeDigest(digest)
+	req, err := newRequest("GET", u, token, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -230,9 +253,11 @@ func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 }
 
 func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
-	// stream blob and verify sha256
-	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/blobs/"+digest, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + normalizeDigest(digest)
+	req, err := newRequest("GET", u, token, "application/octet-stream")
+	if err != nil {
+		return err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
