@@ -55,6 +55,7 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 	d := normalizeDigest(digest)
 	// 1) try with algorithm prefix (sha256:<hex>)
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
+	log.Printf("blob try: %s", u)
 	req, err := newRequest("GET", u, token, "application/octet-stream")
 	if err != nil {
 		return nil, err
@@ -71,6 +72,7 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 	if i := strings.IndexByte(d, ':'); i > 0 {
 		alt := d[i+1:]
 		u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
+		log.Printf("blob try: %s", u2)
 		req2, err := newRequest("GET", u2, token, "application/octet-stream")
 		if err != nil {
 			return nil, err
@@ -267,6 +269,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		if err := json.NewDecoder(resp2.Body).Decode(&mani); err != nil {
 			return nil, nil, err
 		}
+		log.Printf("config digest: %s", mani.Config.Digest)
 		cfg, err := fetchBlob(ref, token, mani.Config.Digest)
 		if err != nil {
 			return nil, nil, err
@@ -279,6 +282,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	if err := json.Unmarshal(body, &mani); err != nil {
 		return nil, nil, err
 	}
+	log.Printf("config digest: %s", mani.Config.Digest)
 	cfg, err := fetchBlob(ref, token, mani.Config.Digest)
 	if err != nil {
 		return nil, nil, err
@@ -294,6 +298,7 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	d := normalizeDigest(digest)
 	// try with algorithm prefix
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
+	log.Printf("layer try: %s", u)
 	req, err := newRequest("GET", u, token, "application/octet-stream")
 	if err != nil {
 		return err
@@ -308,6 +313,7 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 		if i := strings.IndexByte(d, ':'); i > 0 { // fallback without algo
 			alt := d[i+1:]
 			u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
+			log.Printf("layer try: %s", u2)
 			req2, err := newRequest("GET", u2, token, "application/octet-stream")
 			if err != nil {
 				return err
