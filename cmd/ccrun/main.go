@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/alafilearnstocode/ccrun/internal/ns"
+	"github.com/alafilearnstocode/ccrun/internal/registry"
 	"github.com/alafilearnstocode/ccrun/internal/run"
 )
 
@@ -19,6 +21,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		runCmd(os.Args[2:])
+	case "pull":
+		pullCmd(os.Args[2:])
 	case "__ccrun_child__":
 		ns.ChildMain()
 	default:
@@ -28,6 +32,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: ccrun run [ -hostname NAME ] [ -rootfs PATH ] [ -pidns ] [ -mntns ] [ -userns ] [ -mem MB ] [ -cpu PCT ] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "       ccrun pull [ --out DIR ] <image[:tag]>")
 	os.Exit(2)
 }
 
@@ -69,4 +74,22 @@ func runCmd(args []string) {
 		code = 1
 	}
 	os.Exit(code)
+}
+
+func pullCmd(args []string) {
+	fs := flag.NewFlagSet("pull", flag.ExitOnError)
+	outDir := fs.String("out", "images", "Output images directory")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		log.Fatal("usage: ccrun pull [--out DIR] <image[:tag]>")
+	}
+	ref, err := registry.ParseImageRef(fs.Arg(0))
+	if err != nil {
+		log.Fatal(err)
+	}
+	dest := filepath.Join(*outDir, ref.RepoPath(), ref.Tag)
+	if err := registry.Pull(ref, dest); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Pulled %s to %s\n", ref.String(), dest)
 }
