@@ -280,7 +280,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		return nil, nil, err
 	}
 
-	if strings.Contains(ct, "manifest.list.v2+json") {
+	if strings.Contains(ct, "manifest.list.v2+json") || strings.Contains(ct, "application/vnd.oci.image.index.v1+json") {
 		var ml ManifestList
 		if err := json.Unmarshal(body, &ml); err != nil {
 			return nil, nil, err
@@ -307,7 +307,10 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		}
 
 		// Fetch selected image manifest
-		resp2, err := doGET(ref.Repo, "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, "application/vnd.docker.distribution.manifest.v2+json")
+		resp2, err := doGET(ref.Repo, "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, strings.Join([]string{
+			"application/vnd.docker.distribution.manifest.v2+json",
+			"application/vnd.oci.image.manifest.v1+json",
+		}, ", "))
 		if err != nil {
 			return nil, nil, err
 		}
