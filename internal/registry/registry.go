@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,54 @@ func ParseImageRef(s string) (ImageRef, error) {
 }
 
 func normalizeDigest(d string) string { return strings.TrimSpace(d) }
+
+func getBlob(resp *http.Response) ([]byte, error) {
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("blob: %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
+	d := normalizeDigest(digest)
+	// 1) try with algorithm prefix (sha256:<hex>)
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
+	req, err := newRequest("GET", u, token, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil && resp.StatusCode == 200 {
+		return getBlob(resp)
+	}
+	if err == nil {
+		log.Printf("blob GET %s -> %s (will try fallback)", u, resp.Status)
+		resp.Body.Close()
+	}
+	// 2) fallback: try without algorithm prefix if it exists
+	if i := strings.IndexByte(d, ':'); i > 0 {
+		alt := d[i+1:]
+		u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
+		req2, err := newRequest("GET", u2, token, "application/octet-stream")
+		if err != nil {
+			return nil, err
+		}
+		resp2, err := http.DefaultClient.Do(req2)
+		if err == nil && resp2.StatusCode == 200 {
+			return getBlob(resp2)
+		}
+		if err == nil {
+			defer resp2.Body.Close()
+			return nil, fmt.Errorf("blob: %s", resp2.Status)
+		}
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("blob: %s", resp.Status)
+}
 
 func newRequest(method, url, token, accept string) (*http.Request, error) {
 	req, err := http.NewRequest(method, url, nil)
@@ -155,6 +204,8 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	acceptHeader := strings.Join([]string{
 		"application/vnd.docker.distribution.manifest.v2+json",
 		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.oci.image.manifest.v1+json",
 	}, ", ")
 	req, err := newRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, token, acceptHeader)
 	if err != nil {
@@ -236,24 +287,13 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 }
 
 func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
-	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + normalizeDigest(digest)
-	req, err := newRequest("GET", u, token, "application/octet-stream")
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("blob %s: %s", digest, resp.Status)
-	}
-	return io.ReadAll(resp.Body)
+	return fetchBlobWithFallback(ref, token, digest)
 }
 
 func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
-	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + normalizeDigest(digest)
+	d := normalizeDigest(digest)
+	// try with algorithm prefix
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
 	req, err := newRequest("GET", u, token, "application/octet-stream")
 	if err != nil {
 		return err
@@ -262,11 +302,29 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("blob %s: %s", digest, resp.Status)
+		log.Printf("layer GET %s -> %s (will try fallback)", u, resp.Status)
+		resp.Body.Close()
+		if i := strings.IndexByte(d, ':'); i > 0 { // fallback without algo
+			alt := d[i+1:]
+			u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
+			req2, err := newRequest("GET", u2, token, "application/octet-stream")
+			if err != nil {
+				return err
+			}
+			resp2, err := http.DefaultClient.Do(req2)
+			if err != nil {
+				return err
+			}
+			resp = resp2
+			if resp.StatusCode != 200 {
+				defer resp.Body.Close()
+				return fmt.Errorf("blob %s: %s", digest, resp.Status)
+			}
+		}
 	}
 
+	defer resp.Body.Close()
 	// verify digest while extracting
 	h := sha256.New()
 	tee := io.TeeReader(resp.Body, h)
