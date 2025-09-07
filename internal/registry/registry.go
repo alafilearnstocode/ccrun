@@ -58,6 +58,20 @@ type Layer struct {
 	Digest    string `json:"digest"`
 }
 
+type ManifestList struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	MediaType     string `json:"mediaType"`
+	Manifests     []struct {
+		MediaType string `json:"mediaType"`
+		Digest    string `json:"digest"`
+		Platform  struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+			Variant      string `json:"variant"`
+		} `json:"platform"`
+	} `json:"manifests"`
+}
+
 // Pull orchestrates auth -> manifest -> layers -> rootfs extract and saves config.json
 func Pull(ref ImageRef, dest string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
@@ -120,8 +134,12 @@ func getToken(ref ImageRef) (string, error) {
 }
 
 func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error) {
+	// Allow both manifest list (index) and image manifest
 	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, nil)
-	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.docker.distribution.manifest.v2+json",
+		"application/vnd.docker.distribution.manifest.list.v2+json",
+	}, ", "))
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -131,12 +149,65 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	if resp.StatusCode != 200 {
 		return nil, nil, fmt.Errorf("manifest: %s", resp.Status)
 	}
-	var mani Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&mani); err != nil {
+
+	ct := resp.Header.Get("Content-Type")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, nil, err
 	}
 
-	// fetch config blob
+	if strings.Contains(ct, "manifest.list.v2+json") {
+		var ml ManifestList
+		if err := json.Unmarshal(body, &ml); err != nil {
+			return nil, nil, err
+		}
+		pick := ""
+		for _, m := range ml.Manifests { // prefer linux/arm64
+			if m.Platform.OS == "linux" && m.Platform.Architecture == "arm64" {
+				pick = m.Digest
+				break
+			}
+		}
+		if pick == "" {
+			for _, m := range ml.Manifests { // fallback linux/amd64
+				if m.Platform.OS == "linux" && m.Platform.Architecture == "amd64" {
+					pick = m.Digest
+					break
+				}
+			}
+		}
+		if pick == "" {
+			return nil, nil, fmt.Errorf("no suitable platform in manifest list")
+		}
+
+		// Fetch selected image manifest
+		req2, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, nil)
+		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+		req2.Header.Set("Authorization", "Bearer "+token)
+		resp2, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != 200 {
+			return nil, nil, fmt.Errorf("manifest (platform): %s", resp2.Status)
+		}
+		var mani Manifest
+		if err := json.NewDecoder(resp2.Body).Decode(&mani); err != nil {
+			return nil, nil, err
+		}
+		cfg, err := fetchBlob(ref, token, mani.Config.Digest)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mani, cfg, nil
+	}
+
+	// Single image manifest
+	var mani Manifest
+	if err := json.Unmarshal(body, &mani); err != nil {
+		return nil, nil, err
+	}
 	cfg, err := fetchBlob(ref, token, mani.Config.Digest)
 	if err != nil {
 		return nil, nil, err
@@ -175,13 +246,14 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	h := sha256.New()
 	tee := io.TeeReader(resp.Body, h)
 
-	// layers are gzip'ed tars
-	gz, err := gzip.NewReader(tee)
-	if err != nil {
-		return fmt.Errorf("gzip: %w", err)
+	// Some layers are gzip'd; others may be plain tar. Try gzip first.
+	var tr *tar.Reader
+	if gz, err := gzip.NewReader(tee); err == nil {
+		defer gz.Close()
+		tr = tar.NewReader(gz)
+	} else {
+		tr = tar.NewReader(tee)
 	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
 
 	for {
 		hdr, err := tr.Next()
