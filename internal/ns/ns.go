@@ -113,7 +113,13 @@ func ChildMain() {
 
 	// If using a mount namespace, privatize mounts so /proc doesn't leak to host
 	if useMNT {
-		if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		// On some kernels, setting MS_PRIVATE directly on / fails unless it's first a bind mount.
+		// Make / a recursive bind mount of itself, then mark it private recursively.
+		if err := unix.Mount("/", "/", "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+			fmt.Fprintln(os.Stderr, "bind mount /:", err)
+			os.Exit(1)
+		}
+		if err := unix.Mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
 			fmt.Fprintln(os.Stderr, "mount private /:", err)
 			os.Exit(1)
 		}
