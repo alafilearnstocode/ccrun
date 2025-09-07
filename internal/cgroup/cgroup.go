@@ -21,6 +21,11 @@ func isCgroupV2() bool {
 }
 
 func EnsureMount() error {
+	// Ensure the mountpoint exists in the current root (inside chroot it may be missing)
+	if err := os.MkdirAll(cgroupRoot, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", cgroupRoot, err)
+	}
+
 	if isCgroupV2() {
 		return nil
 	}
