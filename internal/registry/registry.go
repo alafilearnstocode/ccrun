@@ -168,8 +168,9 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 		return getBlob(resp)
 	}
 	if err == nil {
-		log.Printf("blob GET %s -> %s (will try fallback)", u, resp.Status)
+		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		log.Printf("blob GET %s -> %s, body=%q", u, resp.Status, string(b))
 	}
 	// 2) fallback: try without algorithm prefix if it exists
 	if i := strings.IndexByte(d, ':'); i > 0 {
@@ -181,8 +182,9 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 			return getBlob(resp2)
 		}
 		if err == nil {
+			b2, _ := io.ReadAll(resp2.Body)
 			defer resp2.Body.Close()
-			return nil, fmt.Errorf("blob: %s", resp2.Status)
+			return nil, fmt.Errorf("blob: %s, body=%q", resp2.Status, string(b2))
 		}
 		return nil, err
 	}
@@ -287,6 +289,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		for _, m := range ml.Manifests { // prefer linux/arm64
 			if m.Platform.OS == "linux" && m.Platform.Architecture == "arm64" {
 				pick = m.Digest
+				log.Printf("picked platform=%s/%s variant=%s digest=%s", m.Platform.OS, m.Platform.Architecture, m.Platform.Variant, m.Digest)
 				break
 			}
 		}
@@ -294,6 +297,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 			for _, m := range ml.Manifests { // fallback linux/amd64
 				if m.Platform.OS == "linux" && m.Platform.Architecture == "amd64" {
 					pick = m.Digest
+					log.Printf("picked platform=%s/%s variant=%s digest=%s", m.Platform.OS, m.Platform.Architecture, m.Platform.Variant, m.Digest)
 					break
 				}
 			}
@@ -350,7 +354,8 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 		return err
 	}
 	if resp.StatusCode != 200 {
-		log.Printf("layer GET %s -> %s (will try fallback)", u, resp.Status)
+		b, _ := io.ReadAll(resp.Body)
+		log.Printf("layer GET %s -> %s, body=%q", u, resp.Status, string(b))
 		resp.Body.Close()
 		if i := strings.IndexByte(d, ':'); i > 0 { // fallback without algo
 			alt := d[i+1:]
@@ -362,8 +367,8 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 			}
 			resp = resp2
 			if resp.StatusCode != 200 {
-				defer resp.Body.Close()
-				return fmt.Errorf("blob %s: %s", digest, resp.Status)
+				b2, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("blob %s: %s, body=%q", digest, resp.Status, string(b2))
 			}
 		}
 	}
