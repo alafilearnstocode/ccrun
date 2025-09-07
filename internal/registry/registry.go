@@ -18,6 +18,113 @@ import (
 	"strings"
 )
 
+// --- auth helpers (challenge flow) ---
+
+type authParams struct {
+	realm   string
+	service string
+	scope   string
+}
+
+func parseAuthHeader(h string) (authParams, bool) {
+	// expected: Bearer realm="...",service="...",scope="..."
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		return authParams{}, false
+	}
+	h = strings.TrimSpace(h[len(prefix):])
+	parts := strings.Split(h, ",")
+	ap := authParams{}
+	for _, p := range parts {
+		kv := strings.SplitN(strings.TrimSpace(p), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k := strings.ToLower(kv[0])
+		v := strings.Trim(kv[1], "\"")
+		switch k {
+		case "realm":
+			ap.realm = v
+		case "service":
+			ap.service = v
+		case "scope":
+			ap.scope = v
+		}
+	}
+	if ap.realm == "" {
+		return authParams{}, false
+	}
+	return ap, true
+}
+
+func fetchToken(ap authParams, repo string) (string, error) {
+	// ensure scope
+	scope := ap.scope
+	if scope == "" {
+		scope = "repository:" + repo + ":pull"
+	}
+	q := url.Values{}
+	q.Set("service", ap.service)
+	q.Set("scope", scope)
+	u := ap.realm + "?" + q.Encode()
+	resp, err := http.Get(u)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("auth: %s", resp.Status)
+	}
+	var tmp struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tmp); err != nil {
+		return "", err
+	}
+	if tmp.Token == "" {
+		return "", errors.New("empty token")
+	}
+	return tmp.Token, nil
+}
+
+// doGET issues a GET and, on 401 with a Bearer challenge, obtains a token and retries once.
+func doGET(repo, urlStr, accept string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	req.Header.Set("User-Agent", "ccrun/0.1 (+https://github.com/alafilearnstocode/ccrun)")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	// 401 -> parse challenge
+	authH := resp.Header.Get("Www-Authenticate")
+	resp.Body.Close()
+	ap, ok := parseAuthHeader(authH)
+	if !ok {
+		return nil, fmt.Errorf("unauthorized and no Bearer challenge")
+	}
+	tok, err := fetchToken(ap, repo)
+	if err != nil {
+		return nil, err
+	}
+	// retry with token
+	req2, _ := http.NewRequest("GET", urlStr, nil)
+	if accept != "" {
+		req2.Header.Set("Accept", accept)
+	}
+	req2.Header.Set("Authorization", "Bearer "+tok)
+	req2.Header.Set("User-Agent", "ccrun/0.1 (+https://github.com/alafilearnstocode/ccrun)")
+	return http.DefaultClient.Do(req2)
+}
+
 type ImageRef struct {
 	Registry string // e.g. registry-1.docker.io
 	Repo     string // e.g. library/alpine
@@ -56,11 +163,7 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 	// 1) try with algorithm prefix (sha256:<hex>)
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
 	log.Printf("blob try: %s", u)
-	req, err := newRequest("GET", u, token, "application/octet-stream")
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doGET(ref.Repo, u, "application/octet-stream")
 	if err == nil && resp.StatusCode == 200 {
 		return getBlob(resp)
 	}
@@ -73,11 +176,7 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 		alt := d[i+1:]
 		u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
 		log.Printf("blob try: %s", u2)
-		req2, err := newRequest("GET", u2, token, "application/octet-stream")
-		if err != nil {
-			return nil, err
-		}
-		resp2, err := http.DefaultClient.Do(req2)
+		resp2, err := doGET(ref.Repo, u2, "application/octet-stream")
 		if err == nil && resp2.StatusCode == 200 {
 			return getBlob(resp2)
 		}
@@ -91,21 +190,6 @@ func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 		return nil, err
 	}
 	return nil, fmt.Errorf("blob: %s", resp.Status)
-}
-
-func newRequest(method, url, token, accept string) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-	req.Header.Set("User-Agent", "ccrun/0.1 (+https://github.com/alafilearnstocode/ccrun)")
-	return req, nil
 }
 
 // Docker schema2 manifest
@@ -146,12 +230,7 @@ func Pull(ref ImageRef, dest string) error {
 		return err
 	}
 
-	token, err := getToken(ref)
-	if err != nil {
-		return err
-	}
-
-	mani, rawConfig, err := getManifestAndConfig(ref, token)
+	mani, rawConfig, err := getManifestAndConfig(ref, "")
 	if err != nil {
 		return err
 	}
@@ -163,7 +242,7 @@ func Pull(ref ImageRef, dest string) error {
 
 	// download + apply layers in order
 	for i, l := range mani.Layers {
-		if err := fetchAndApplyLayer(ref, token, l.Digest, rootfsDir); err != nil {
+		if err := fetchAndApplyLayer(ref, "", l.Digest, rootfsDir); err != nil {
 			return fmt.Errorf("layer %d %s: %w", i, l.Digest, err)
 		}
 	}
@@ -176,31 +255,6 @@ func Pull(ref ImageRef, dest string) error {
 	return nil
 }
 
-func getToken(ref ImageRef) (string, error) {
-	v := url.Values{}
-	v.Set("service", "registry.docker.io")
-	v.Set("scope", "repository:"+ref.Repo+":pull")
-	u := url.URL{Scheme: "https", Host: "auth.docker.io", Path: "/token", RawQuery: v.Encode()}
-	resp, err := http.Get(u.String())
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("auth: %s", resp.Status)
-	}
-	var tmp struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tmp); err != nil {
-		return "", err
-	}
-	if tmp.Token == "" {
-		return "", errors.New("empty token")
-	}
-	return tmp.Token, nil
-}
-
 func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error) {
 	// Allow both manifest list (index) and image manifest
 	acceptHeader := strings.Join([]string{
@@ -209,11 +263,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		"application/vnd.oci.image.index.v1+json",
 		"application/vnd.oci.image.manifest.v1+json",
 	}, ", ")
-	req, err := newRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, token, acceptHeader)
-	if err != nil {
-		return nil, nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doGET(ref.Repo, "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+ref.Tag, acceptHeader)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -253,11 +303,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		}
 
 		// Fetch selected image manifest
-		req2, err := newRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, token, "application/vnd.docker.distribution.manifest.v2+json")
-		if err != nil {
-			return nil, nil, err
-		}
-		resp2, err := http.DefaultClient.Do(req2)
+		resp2, err := doGET(ref.Repo, "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, "application/vnd.docker.distribution.manifest.v2+json")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -270,7 +316,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 			return nil, nil, err
 		}
 		log.Printf("config digest: %s", mani.Config.Digest)
-		cfg, err := fetchBlob(ref, token, mani.Config.Digest)
+		cfg, err := fetchBlob(ref, "", mani.Config.Digest)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -283,7 +329,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		return nil, nil, err
 	}
 	log.Printf("config digest: %s", mani.Config.Digest)
-	cfg, err := fetchBlob(ref, token, mani.Config.Digest)
+	cfg, err := fetchBlob(ref, "", mani.Config.Digest)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -299,11 +345,7 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	// try with algorithm prefix
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + d
 	log.Printf("layer try: %s", u)
-	req, err := newRequest("GET", u, token, "application/octet-stream")
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doGET(ref.Repo, u, "application/octet-stream")
 	if err != nil {
 		return err
 	}
@@ -314,11 +356,7 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 			alt := d[i+1:]
 			u2 := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + alt
 			log.Printf("layer try: %s", u2)
-			req2, err := newRequest("GET", u2, token, "application/octet-stream")
-			if err != nil {
-				return err
-			}
-			resp2, err := http.DefaultClient.Do(req2)
+			resp2, err := doGET(ref.Repo, u2, "application/octet-stream")
 			if err != nil {
 				return err
 			}
