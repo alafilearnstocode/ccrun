@@ -22,8 +22,8 @@ type Config struct {
 	UsePID   bool
 	UseMNT   bool
 	UseUSER  bool
-	MemBytes int64 // memory limit in bytes (0 = unlimited)
-	CPUPct   int   // CPU percent (0 or >=100 = unlimited)
+	MemBytes int64
+	CPUPct   int
 	Workdir  string
 	Env      []string
 }
@@ -88,7 +88,6 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 		sp.GidMappingsEnableSetgroups = false
 		sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: gid, Size: 1}}
 
-		// Be root inside the new user namespace
 		sp.Credential = &syscall.Credential{Uid: 0, Gid: 0}
 	}
 	cmd.SysProcAttr = sp
@@ -187,7 +186,6 @@ func ChildMain() {
 		cleanupProc = true
 	}
 
-	// cgroups v2 limits
 	var cgPath string
 	if memMB > 0 || cpuPct > 0 {
 		memBytes := int64(memMB) * 1024 * 1024

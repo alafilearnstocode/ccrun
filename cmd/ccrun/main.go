@@ -96,7 +96,7 @@ func runCmd(args []string) {
 			log.Fatal(err)
 		}
 		dest := filepath.Join(imagesDir(), ref.RepoPath(), ref.Tag)
-		// Pull only if dest/rootfs missing
+
 		if _, err := os.Stat(filepath.Join(dest, "rootfs")); err != nil {
 			if err := registry.Pull(ref, dest); err != nil {
 				log.Fatal(err)
@@ -105,9 +105,6 @@ func runCmd(args []string) {
 		*root = filepath.Join(dest, "rootfs")
 	}
 
-	// If we're going to chroot into a rootfs and the user didn't explicitly
-	// pick isolation flags, enable a sane default set so chroot works
-	// without sudo (needs CAP_SYS_CHROOT in a user namespace) and mounts are private.
 	if *root != "" {
 		if !*mntns {
 			*mntns = true
@@ -115,7 +112,7 @@ func runCmd(args []string) {
 		if !*userns {
 			*userns = true
 		}
-		// PID namespace is useful so /proc is container-local when mounted.
+
 		if !*pidns {
 			*pidns = true
 		}
@@ -125,7 +122,6 @@ func runCmd(args []string) {
 		log.Fatal("no command provided")
 	}
 
-	// Fast path: Step-1 behavior when no isolation/limits/overrides in use
 	if *hostname == "" && *root == "" && !*pidns && !*mntns && !*userns && *memMB == 0 && *cpuPct == 0 && *workdir == "" && len(envs) == 0 {
 		code, err := run.ExecPassthrough(cmdArgs[0], cmdArgs[1:], os.Environ())
 		if err != nil && code == 0 {

@@ -11,7 +11,6 @@ import (
 
 const cgroupRoot = "/sys/fs/cgroup"
 
-// cgroup2 magic = 0x63677270
 func isCgroupV2() bool {
 	var st unix.Statfs_t
 	if err := unix.Statfs(cgroupRoot, &st); err != nil {
@@ -21,7 +20,7 @@ func isCgroupV2() bool {
 }
 
 func EnsureMount() error {
-	// Ensure the mountpoint exists in the current root (inside chroot it may be missing)
+
 	if err := os.MkdirAll(cgroupRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", cgroupRoot, err)
 	}
@@ -46,7 +45,6 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 		return "", fmt.Errorf("mkdir cgroup: %w", err)
 	}
 
-	// memory.max
 	if memBytes <= 0 {
 		if err := os.WriteFile(filepath.Join(path, "memory.max"), []byte("max"), 0o644); err != nil {
 			return "", fmt.Errorf("set memory.max: %w", err)
@@ -57,7 +55,6 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 		}
 	}
 
-	// cpu.max
 	const period = 100000 // 100ms
 	var cpuVal string
 	if cpuPct <= 0 || cpuPct >= 100 {
@@ -73,7 +70,6 @@ func SetupAndEnter(memBytes int64, cpuPct int) (string, error) {
 		return "", fmt.Errorf("set cpu.max: %w", err)
 	}
 
-	// join cgroup
 	self := strconv.Itoa(os.Getpid())
 	if err := os.WriteFile(filepath.Join(path, "cgroup.procs"), []byte(self), 0o644); err != nil {
 		return "", fmt.Errorf("join cgroup: %w", err)
