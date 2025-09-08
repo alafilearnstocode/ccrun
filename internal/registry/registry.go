@@ -188,6 +188,8 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	req.Header.Set("Accept", strings.Join([]string{
 		"application/vnd.docker.distribution.manifest.v2+json",
 		"application/vnd.docker.distribution.manifest.list.v2+json",
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
 	}, ", "))
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := authClient().Do(req)
@@ -207,7 +209,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		return nil, nil, err
 	}
 
-	if strings.Contains(ct, "manifest.list.v2+json") {
+	if strings.Contains(ct, "manifest.list.v2+json") || strings.Contains(ct, "image.index.v1+json") {
 		var ml ManifestList
 		if err := json.Unmarshal(body, &ml); err != nil {
 			return nil, nil, err
@@ -233,7 +235,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		dbg("selected platform manifest digest: %s", pick)
 
 		req2, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, nil)
-		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
+		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json")
 		req2.Header.Set("Authorization", "Bearer "+token)
 		resp2, err := authClient().Do(req2)
 		if err != nil {
@@ -255,15 +257,19 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		return &mani, cfg, nil
 	}
 
-	var mani Manifest
-	if err := json.Unmarshal(body, &mani); err != nil {
-		return nil, nil, err
+	if strings.Contains(ct, "manifest.v2+json") || strings.Contains(ct, "image.manifest.v1+json") {
+		var mani Manifest
+		if err := json.Unmarshal(body, &mani); err != nil {
+			return nil, nil, err
+		}
+		cfg, err := fetchBlob(ref, token, normalizeDigest(mani.Config.Digest))
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mani, cfg, nil
 	}
-	cfg, err := fetchBlob(ref, token, normalizeDigest(mani.Config.Digest))
-	if err != nil {
-		return nil, nil, err
-	}
-	return &mani, cfg, nil
+
+	return nil, nil, fmt.Errorf("unsupported manifest content-type: %s", ct)
 }
 
 func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
