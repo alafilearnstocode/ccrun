@@ -12,6 +12,13 @@ import (
 	"github.com/alafilearnstocode/ccrun/internal/run"
 )
 
+func imagesDir() string {
+	if v := os.Getenv("CCRUN_IMAGES_DIR"); v != "" {
+		return v
+	}
+	return "images"
+}
+
 // repeatable --env flags
 type arrayFlags []string
 
@@ -61,13 +68,50 @@ func runCmd(args []string) {
 
 	fs.Parse(args)
 	rest := fs.Args()
-	if len(rest) == 0 {
+
+	var cmdArgs []string
+	imageRef := ""
+
+	if *root == "" && len(rest) > 0 {
+		imageRef = rest[0]
+		dashdash := -1
+		for i, a := range rest {
+			if a == "--" {
+				dashdash = i
+				break
+			}
+		}
+		if dashdash >= 0 {
+			cmdArgs = rest[dashdash+1:]
+		} else {
+			cmdArgs = rest[1:]
+		}
+	} else {
+		cmdArgs = rest
+	}
+
+	if *root == "" && imageRef != "" {
+		ref, err := registry.ParseImageRef(imageRef)
+		if err != nil {
+			log.Fatal(err)
+		}
+		dest := filepath.Join(imagesDir(), ref.RepoPath(), ref.Tag)
+		// Pull only if dest/rootfs missing
+		if _, err := os.Stat(filepath.Join(dest, "rootfs")); err != nil {
+			if err := registry.Pull(ref, dest); err != nil {
+				log.Fatal(err)
+			}
+		}
+		*root = filepath.Join(dest, "rootfs")
+	}
+
+	if len(cmdArgs) == 0 {
 		log.Fatal("no command provided")
 	}
 
 	// Fast path: Step-1 behavior when no isolation/limits/overrides in use
 	if *hostname == "" && *root == "" && !*pidns && !*mntns && !*userns && *memMB == 0 && *cpuPct == 0 && *workdir == "" && len(envs) == 0 {
-		code, err := run.ExecPassthrough(rest[0], rest[1:], os.Environ())
+		code, err := run.ExecPassthrough(cmdArgs[0], cmdArgs[1:], os.Environ())
 		if err != nil && code == 0 {
 			code = 1
 		}
@@ -86,7 +130,7 @@ func runCmd(args []string) {
 		Workdir:  *workdir,
 		Env:      envs,
 	}
-	code, err := ns.SpawnChild(cfg, rest[0], rest[1:])
+	code, err := ns.SpawnChild(cfg, cmdArgs[0], cmdArgs[1:])
 	if err != nil && code == 0 {
 		code = 1
 	}
