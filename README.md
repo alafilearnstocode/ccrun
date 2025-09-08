@@ -23,7 +23,9 @@ go build ./cmd/ccrun
 ```
 
 ### Pull an Image
+``` bash
 ./ccrun pull alpine:latest
+```
 
 ## Demo
 
