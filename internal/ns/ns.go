@@ -80,11 +80,15 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	}
 	if cfg.UseUSER {
 		sp.Cloneflags |= unix.CLONE_NEWUSER
+
 		uid := os.Getuid()
 		gid := os.Getgid()
+
 		sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: uid, Size: 1}}
 		sp.GidMappingsEnableSetgroups = false
 		sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: gid, Size: 1}}
+
+		// Be root inside the new user namespace
 		sp.Credential = &syscall.Credential{Uid: 0, Gid: 0}
 	}
 	cmd.SysProcAttr = sp
