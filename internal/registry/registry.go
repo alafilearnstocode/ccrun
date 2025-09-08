@@ -17,6 +17,13 @@ import (
 	"strings"
 )
 
+// debug logger (enabled when CCRUN_HTTP_DEBUG=1)
+func dbg(format string, args ...any) {
+	if os.Getenv("CCRUN_HTTP_DEBUG") == "1" {
+		fmt.Printf("[ccrun] "+format+"\n", args...)
+	}
+}
+
 // http client that preserves Authorization header across redirects
 func authClient() *http.Client {
 	return &http.Client{
@@ -149,6 +156,7 @@ func getToken(ref ImageRef) (string, error) {
 	v.Set("service", "registry.docker.io")
 	v.Set("scope", "repository:"+ref.Repo+":pull")
 	u := url.URL{Scheme: "https", Host: "auth.docker.io", Path: "/token", RawQuery: v.Encode()}
+	dbg("auth request: %s (scope=%q)", u.String(), v.Get("scope"))
 	resp, err := http.Get(u.String())
 	if err != nil {
 		return "", err
@@ -162,6 +170,11 @@ func getToken(ref ImageRef) (string, error) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&tmp); err != nil {
 		return "", err
+	}
+	if len(tmp.Token) > 16 {
+		dbg("auth OK: token=%s...", tmp.Token[:16])
+	} else {
+		dbg("auth OK: token(len=%d)", len(tmp.Token))
 	}
 	if tmp.Token == "" {
 		return "", errors.New("empty token")
@@ -181,12 +194,14 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	if err != nil {
 		return nil, nil, err
 	}
+	dbg("manifest GET %s -> %s", req.URL.String(), resp.Status)
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return nil, nil, fmt.Errorf("manifest: %s", resp.Status)
 	}
 
 	ct := resp.Header.Get("Content-Type")
+	dbg("manifest content-type: %s", ct)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, err
@@ -215,6 +230,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		if pick == "" {
 			return nil, nil, fmt.Errorf("no suitable platform in manifest list")
 		}
+		dbg("selected platform manifest digest: %s", pick)
 
 		req2, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, nil)
 		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
@@ -223,6 +239,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		if err != nil {
 			return nil, nil, err
 		}
+		dbg("platform manifest GET %s -> %s", req2.URL.String(), resp2.Status)
 		defer resp2.Body.Close()
 		if resp2.StatusCode != 200 {
 			return nil, nil, fmt.Errorf("manifest (platform): %s", resp2.Status)
@@ -252,6 +269,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 	digest = normalizeDigest(digest)
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + digest
+	dbg("blob GET %s", u)
 	resp, err := doGET(u, map[string]string{
 		"Authorization": "Bearer " + token,
 		"Accept":        "application/octet-stream",
@@ -261,6 +279,7 @@ func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		dbg("blob GET -> %s", resp.Status)
 		return nil, fmt.Errorf("blob %s: %s", digest, resp.Status)
 	}
 	return io.ReadAll(resp.Body)
@@ -269,6 +288,7 @@ func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	digest = normalizeDigest(digest)
 	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + digest
+	dbg("layer GET %s", u)
 	resp, err := doGET(u, map[string]string{
 		"Authorization": "Bearer " + token,
 		"Accept":        "application/octet-stream",
@@ -278,6 +298,7 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		dbg("layer GET -> %s", resp.Status)
 		return fmt.Errorf("blob %s: %s", digest, resp.Status)
 	}
 
