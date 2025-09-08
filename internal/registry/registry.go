@@ -131,7 +131,7 @@ func Pull(ref ImageRef, dest string) error {
 
 	// download + apply layers in order
 	for i, l := range mani.Layers {
-		if err := fetchAndApplyLayer(ref, token, l.Digest, rootfsDir); err != nil {
+		if err := fetchAndApplyLayer(ref, token, normalizeDigest(l.Digest), rootfsDir); err != nil {
 			return fmt.Errorf("layer %d %s: %w", i, l.Digest, err)
 		}
 	}
