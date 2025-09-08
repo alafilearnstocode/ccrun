@@ -24,6 +24,8 @@ type Config struct {
 	UseUSER  bool
 	MemBytes int64 // memory limit in bytes (0 = unlimited)
 	CPUPct   int   // CPU percent (0 or >=100 = unlimited)
+	Workdir  string
+	Env      []string
 }
 
 func SpawnChild(cfg Config, command string, args []string) (int, error) {
@@ -53,6 +55,12 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	}
 	if cfg.CPUPct > 0 {
 		argv = append(argv, "-cpu", fmt.Sprintf("%d", cfg.CPUPct))
+	}
+	if cfg.Workdir != "" {
+		argv = append(argv, "-workdir", cfg.Workdir)
+	}
+	for _, e := range cfg.Env {
+		argv = append(argv, "-env", e)
 	}
 	argv = append(argv, "--", command)
 	argv = append(argv, args...)
@@ -89,6 +97,17 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 	return 0, nil
 }
 
+type arrayFlags []string
+
+func (i *arrayFlags) String() string {
+	return fmt.Sprint(*i)
+}
+
+func (i *arrayFlags) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 func ChildMain() {
 	f := flag.NewFlagSet(childSub, flag.ExitOnError)
 	var useUTS bool
@@ -99,6 +118,8 @@ func ChildMain() {
 	var useUSER bool
 	var memMB int
 	var cpuPct int
+	var workdir string
+	var envs arrayFlags
 
 	f.BoolVar(&useUTS, "uts", false, "use UTS namespace")
 	f.StringVar(&hostname, "hostname", "", "hostname inside container")
@@ -108,6 +129,8 @@ func ChildMain() {
 	f.BoolVar(&useUSER, "userns", false, "use user namespace (rootless)")
 	f.IntVar(&memMB, "mem", 0, "memory limit in MB (0 = unlimited)")
 	f.IntVar(&cpuPct, "cpu", 0, "CPU limit in percent (0 or >=100 = unlimited)")
+	f.StringVar(&workdir, "workdir", "", "working directory inside container")
+	f.Var(&envs, "env", "environment variable KEY=VAL (repeatable)")
 
 	f.Parse(os.Args[2:])
 	rest := f.Args()
@@ -128,6 +151,13 @@ func ChildMain() {
 	if root != "" {
 		if err := rootfs.EnterChroot(root); err != nil {
 			fmt.Fprintln(os.Stderr, "chroot:", err)
+			os.Exit(1)
+		}
+	}
+
+	if workdir != "" {
+		if err := os.Chdir(workdir); err != nil {
+			fmt.Fprintln(os.Stderr, "chdir:", err)
 			os.Exit(1)
 		}
 	}
@@ -164,7 +194,10 @@ func ChildMain() {
 		cgPath = p
 	}
 
-	code, err := run.ExecPassthrough(target, targs, os.Environ())
+	env := os.Environ()
+	env = append(env, envs...)
+
+	code, err := run.ExecPassthrough(target, targs, env)
 
 	if cleanupProc {
 		_ = unix.Unmount("/proc", 0)
