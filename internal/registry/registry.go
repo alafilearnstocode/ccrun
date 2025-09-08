@@ -24,15 +24,26 @@ func dbg(format string, args ...any) {
 	}
 }
 
-// http client that preserves Authorization header across redirects
+// http client that preserves only safe headers across redirects.
+// On cross-host redirects (Docker Hub -> CDN), drop Authorization.
 func authClient() *http.Client {
 	return &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 {
-				// copy all headers from the previous request; Docker Hub redirects to
-				// a different host (e.g., cloud storage) and Go drops Authorization by default.
-				for k, vv := range via[0].Header {
-					req.Header[k] = vv
+				prev := via[0]
+				// Always keep Accept (some registries require it for blob GET)
+				if v := prev.Header.Get("Accept"); v != "" {
+					req.Header.Set("Accept", v)
+				}
+				// Keep User-Agent if present
+				if v := prev.Header.Get("User-Agent"); v != "" {
+					req.Header.Set("User-Agent", v)
+				}
+				// Authorization only if host stays the same (no CDN hop)
+				if prev.URL.Host == req.URL.Host {
+					if v := prev.Header.Get("Authorization"); v != "" {
+						req.Header.Set("Authorization", v)
+					}
 				}
 			}
 			return nil
