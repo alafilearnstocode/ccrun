@@ -17,6 +17,40 @@ import (
 	"strings"
 )
 
+// http client that preserves Authorization header across redirects
+func authClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > 0 {
+				// copy all headers from the previous request; Docker Hub redirects to
+				// a different host (e.g., cloud storage) and Go drops Authorization by default.
+				for k, vv := range via[0].Header {
+					req.Header[k] = vv
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func doGET(u string, hdr map[string]string) (*http.Response, error) {
+	req, _ := http.NewRequest("GET", u, nil)
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	return authClient().Do(req)
+}
+
+func normalizeDigest(d string) string {
+	if strings.HasPrefix(d, "sha256:") {
+		return d
+	}
+	if len(d) == 64 {
+		return "sha256:" + d
+	}
+	return d
+}
+
 type ImageRef struct {
 	Registry string // e.g. registry-1.docker.io
 	Repo     string // e.g. library/alpine
@@ -143,7 +177,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		"application/vnd.docker.distribution.manifest.list.v2+json",
 	}, ", "))
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -185,7 +219,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		req2, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/manifests/"+pick, nil)
 		req2.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
 		req2.Header.Set("Authorization", "Bearer "+token)
-		resp2, err := http.DefaultClient.Do(req2)
+		resp2, err := authClient().Do(req2)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -197,7 +231,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 		if err := json.NewDecoder(resp2.Body).Decode(&mani); err != nil {
 			return nil, nil, err
 		}
-		cfg, err := fetchBlob(ref, token, mani.Config.Digest)
+		cfg, err := fetchBlob(ref, token, normalizeDigest(mani.Config.Digest))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -208,7 +242,7 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 	if err := json.Unmarshal(body, &mani); err != nil {
 		return nil, nil, err
 	}
-	cfg, err := fetchBlob(ref, token, mani.Config.Digest)
+	cfg, err := fetchBlob(ref, token, normalizeDigest(mani.Config.Digest))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -216,9 +250,12 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 }
 
 func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
-	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/blobs/"+digest, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	digest = normalizeDigest(digest)
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + digest
+	resp, err := doGET(u, map[string]string{
+		"Authorization": "Bearer " + token,
+		"Accept":        "application/octet-stream",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -230,10 +267,12 @@ func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 }
 
 func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
-	// stream blob and verify sha256
-	req, _ := http.NewRequest("GET", "https://"+ref.Registry+"/v2/"+ref.Repo+"/blobs/"+digest, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	digest = normalizeDigest(digest)
+	u := "https://" + ref.Registry + "/v2/" + ref.Repo + "/blobs/" + digest
+	resp, err := doGET(u, map[string]string{
+		"Authorization": "Bearer " + token,
+		"Accept":        "application/octet-stream",
+	})
 	if err != nil {
 		return err
 	}
