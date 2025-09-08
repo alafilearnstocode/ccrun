@@ -85,6 +85,7 @@ func SpawnChild(cfg Config, command string, args []string) (int, error) {
 		sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: uid, Size: 1}}
 		sp.GidMappingsEnableSetgroups = false
 		sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: gid, Size: 1}}
+		sp.Credential = &syscall.Credential{Uid: 0, Gid: 0}
 	}
 	cmd.SysProcAttr = sp
 
