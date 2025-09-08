@@ -105,6 +105,22 @@ func runCmd(args []string) {
 		*root = filepath.Join(dest, "rootfs")
 	}
 
+	// If we're going to chroot into a rootfs and the user didn't explicitly
+	// pick isolation flags, enable a sane default set so chroot works
+	// without sudo (needs CAP_SYS_CHROOT in a user namespace) and mounts are private.
+	if *root != "" {
+		if !*mntns {
+			*mntns = true
+		}
+		if !*userns {
+			*userns = true
+		}
+		// PID namespace is useful so /proc is container-local when mounted.
+		if !*pidns {
+			*pidns = true
+		}
+	}
+
 	if len(cmdArgs) == 0 {
 		log.Fatal("no command provided")
 	}
