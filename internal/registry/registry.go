@@ -1,3 +1,12 @@
+package registry
+
+import (
+	"fmt"
+	"io"
+	"log"
+	"strings"
+)
+
 func fetchBlobWithFallback(ref ImageRef, token, digest string) ([]byte, error) {
 	d := normalizeDigest(digest)
 	if !strings.HasPrefix(d, "sha256:") {
