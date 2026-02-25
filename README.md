@@ -1,4 +1,4 @@
-# ccrun — Minimal Container Runtime
+# ccrun: Minimal Container Runtime
 
 `ccrun` is a lightweight container runtime written in Go.  
 It demonstrates Linux namespaces, cgroups, and Docker Registry integration from scratch — without relying on Docker or containerd.  
