@@ -3,6 +3,10 @@
 `ccrun` is a lightweight container runtime written in Go.  
 It demonstrates Linux namespaces, cgroups, and Docker Registry integration from scratch — without relying on Docker or containerd.  
 
+## Demo
+
+See [docs](./docs) for usage examples and screenshots of ccrun in action.
+
 ## Features
 - Create isolated processes using **PID, mount, UTS, and user namespaces**  
 - Apply **CPU and memory limits** with cgroups v2  
@@ -27,6 +31,3 @@ go build ./cmd/ccrun
 ./ccrun pull alpine:latest
 ```
 
-## Demo
-
-See [docs](./docs) for usage examples and screenshots of ccrun in action.
