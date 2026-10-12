@@ -1,0 +1,17 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build ./cmd/ccrun
+      - run: go test ./...
+      - name: integration (real containers, cgroup v2 memory limit)
+        run: sudo -E env "PATH=$PATH" CCRUN_INTEGRATION=1 go test ./cmd/ccrun -v -count=1
