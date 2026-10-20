@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -217,22 +215,14 @@ func getManifestAndConfig(ref ImageRef, token string) (*Manifest, []byte, error)
 			return nil, nil, err
 		}
 		pick := ""
-		for _, m := range ml.Manifests { // prefer linux/arm64
-			if m.Platform.OS == "linux" && m.Platform.Architecture == "arm64" {
+		for _, m := range ml.Manifests {
+			if m.Platform.OS == "linux" && m.Platform.Architecture == runtime.GOARCH {
 				pick = m.Digest
 				break
 			}
 		}
 		if pick == "" {
-			for _, m := range ml.Manifests { // fallback linux/amd64
-				if m.Platform.OS == "linux" && m.Platform.Architecture == "amd64" {
-					pick = m.Digest
-					break
-				}
-			}
-		}
-		if pick == "" {
-			return nil, nil, fmt.Errorf("no suitable platform in manifest list")
+			return nil, nil, fmt.Errorf("no linux/%s image in manifest list", runtime.GOARCH)
 		}
 		dbg("selected platform manifest digest: %s", pick)
 
@@ -290,7 +280,15 @@ func fetchBlob(ref ImageRef, token, digest string) ([]byte, error) {
 		dbg("blob GET -> %s", resp.Status)
 		return nil, fmt.Errorf("blob %s: %s", digest, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(b)
+	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
+		return nil, fmt.Errorf("blob %s: digest mismatch: got %s", digest, got)
+	}
+	return b, nil
 }
 
 func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
@@ -309,90 +307,5 @@ func fetchAndApplyLayer(ref ImageRef, token, digest, dest string) error {
 		dbg("layer GET -> %s", resp.Status)
 		return fmt.Errorf("blob %s: %s", digest, resp.Status)
 	}
-
-	h := sha256.New()
-	tee := io.TeeReader(resp.Body, h)
-
-	var tr *tar.Reader
-	if gz, err := gzip.NewReader(tee); err == nil {
-		defer gz.Close()
-		tr = tar.NewReader(gz)
-	} else {
-		tr = tar.NewReader(tee)
-	}
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if err := applyTarEntry(dest, hdr, tr); err != nil {
-			return err
-		}
-	}
-
-	sum := "sha256:" + hex.EncodeToString(h.Sum(nil))
-	if sum != digest {
-		return fmt.Errorf("digest mismatch: got %s want %s", sum, digest)
-	}
-	return nil
-}
-
-func applyTarEntry(root string, hdr *tar.Header, r io.Reader) error {
-
-	name := path.Clean("/" + hdr.Name)[1:]
-	full := filepath.Join(root, name)
-
-	base := path.Base(name)
-	dir := filepath.Dir(full)
-
-	if strings.HasPrefix(base, ".wh.") {
-		target := filepath.Join(root, path.Dir(name), strings.TrimPrefix(base, ".wh."))
-		return os.RemoveAll(target)
-	}
-	if base == ".wh..wh..opq" {
-
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
-		}
-		return nil
-	}
-
-	switch hdr.Typeflag {
-	case tar.TypeDir:
-		return os.MkdirAll(full, os.FileMode(hdr.Mode))
-	case tar.TypeReg, tar.TypeRegA:
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(full, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(f, r); err != nil {
-			f.Close()
-			return err
-		}
-		return f.Close()
-	case tar.TypeSymlink:
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		_ = os.RemoveAll(full)
-		return os.Symlink(hdr.Linkname, full)
-	case tar.TypeLink:
-
-		target := filepath.Join(root, hdr.Linkname)
-		_ = os.RemoveAll(full)
-		return os.Link(target, full)
-	case tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-
-		return nil
-	default:
-		return nil
-	}
+	return applyBlob(resp.Body, digest, dest)
 }

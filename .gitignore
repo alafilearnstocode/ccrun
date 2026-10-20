@@ -1,6 +1,10 @@
 bin/
 .vscode/
 *.tmp
-rootfs/
-images/
 .DS_Store
+
+# Anchored to the repo root: an unanchored "rootfs/" also matched
+# internal/rootfs/ and kept that package out of git.
+/rootfs/
+/images/
+/ccrun
